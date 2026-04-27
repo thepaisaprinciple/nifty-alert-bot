@@ -49,9 +49,21 @@ def get_data(symbol):
 # CALCULATE
 # -------------------------
 def calculate(data):
-    data['Rolling Peak'] = data['Close'].rolling(252).max()
-    data['Drawdown %'] = ((data['Close'] - data['Rolling Peak']) / data['Rolling Peak']) * 100
-    return data
+    try:
+        # Ensure Close is a Series (not DataFrame)
+        if isinstance(data['Close'], pd.DataFrame):
+            close = data['Close'].iloc[:, 0]
+        else:
+            close = data['Close']
+
+        data['Rolling Peak'] = close.rolling(252).max()
+        data['Drawdown %'] = ((close - data['Rolling Peak']) / data['Rolling Peak']) * 100
+
+        return data
+
+    except Exception as e:
+        print(f"Calculation error: {e}")
+        return None
 
 # -------------------------
 # ALERT
@@ -160,6 +172,8 @@ def run():
             continue
 
         data = calculate(data)
+        if data is None:
+            continue
         latest = data.iloc[-1]
 
         dd = latest['Drawdown %']
