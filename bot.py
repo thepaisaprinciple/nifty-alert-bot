@@ -146,20 +146,32 @@ def generate_chart(data, name):
 # -------------------------
 def send(msg, img=None):
     try:
-        requests.post(
+        print("Sending message to:", CHAT_ID)
+        print("Message:", msg)
+
+        response = requests.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}
+            data={
+                "chat_id": CHAT_ID,
+                "text": msg,
+                "parse_mode": "HTML"
+            }
         )
 
-        if img:
+        print("Message response:", response.text)
+
+        # Send image ONLY if exists
+        if img and os.path.exists(img):
             with open(img, 'rb') as f:
-                requests.post(
+                response = requests.post(
                     f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
                     data={"chat_id": CHAT_ID},
                     files={"photo": f}
                 )
-    except:
-        pass
+            print("Photo response:", response.text)
+
+    except Exception as e:
+        print("Telegram Error:", e)
 
 # -------------------------
 # MAIN
