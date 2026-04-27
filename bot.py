@@ -1,3 +1,6 @@
+import matplotlib
+matplotlib.use('Agg')
+
 import yfinance as yf
 import pandas as pd
 import requests
@@ -11,8 +14,10 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 # -------------------------
-# INDICES (clean list)
+# SETTINGS
 # -------------------------
+TEST_MODE = True  # change to False later
+
 INDICES = {
     "Nifty 50": "^NSEI",
     "Nifty Next 50": "^NSMIDCP",
@@ -23,7 +28,7 @@ INDICES = {
 }
 
 # -------------------------
-# STATE HANDLING
+# STATE
 # -------------------------
 def load_state():
     try:
@@ -37,7 +42,7 @@ def save_state(state):
         json.dump(state, f)
 
 # -------------------------
-# FETCH DATA
+# FETCH
 # -------------------------
 def get_data(symbol):
     try:
@@ -56,19 +61,28 @@ def get_data(symbol):
         return None
 
 # -------------------------
-# CALCULATE DRAWDOWN
+# CALCULATION
 # -------------------------
 def calculate(data):
     try:
         data = data.copy()
 
-        if isinstance(data['Close'], pd.DataFrame):
-            close = data['Close'].iloc[:, 0]
-        else:
-            close = data['Close']
+        close = data['Close']
+        if isinstance(close, pd.DataFrame):
+            close = close.iloc[:, 0]
 
-        data.loc[:, 'Rolling Peak'] = close.rolling(252).max()
-        data.loc[:, 'Drawdown %'] = ((close - data['Rolling Peak']) / data['Rolling Peak']) * 100
+        close = close.dropna()
+        if close.empty:
+            return None
+
+        data = data.loc[close.index]
+
+        rolling_peak = close.rolling(252).max()
+        if rolling_peak.isna().all():
+            return None
+
+        data.loc[:, 'Rolling Peak'] = rolling_peak
+        data.loc[:, 'Drawdown %'] = ((close - rolling_peak) / rolling_peak) * 100
 
         data = data.dropna(subset=['Rolling Peak'])
 
@@ -79,36 +93,25 @@ def calculate(data):
         return None
 
 # -------------------------
-# ALERT LOGIC
+# LEVEL
 # -------------------------
 def get_level(dd):
     if dd <= -20:
-        return "20"
+        return "🔴 20% Crash"
     elif dd <= -10:
-        return "10"
+        return "🟠 10% Correction"
     elif dd <= -5:
-        return "5"
+        return "🟡 5% Dip"
     return None
 
-def format_msg(name, dd, level):
-    if level == "20":
-        return f"🔴 <b>{name}</b>\n🔥 <b>20% CRASH</b>\nDrawdown: {dd:.2f}%"
-    elif level == "10":
-        return f"🟠 <b>{name}</b>\n⚠️ <b>10% Correction</b>\nDrawdown: {dd:.2f}%"
-    elif level == "5":
-        return f"🟡 <b>{name}</b>\n📉 5% Dip\nDrawdown: {dd:.2f}%"
-
 # -------------------------
-# CHART (ENHANCED)
+# CHART
 # -------------------------
 def generate_chart(data, name):
-    filename = f"{name}.png"
+    filename = f"/tmp/{name.replace(' ', '_')}.png"
 
     try:
         data = data.tail(300).copy()
-
-        latest_price = data['Close'].iloc[-1]
-        latest_dd = data['Drawdown %'].iloc[-1]
 
         apds = [
             mpf.make_addplot(data['Rolling Peak'], linestyle='dashed')
@@ -134,6 +137,9 @@ def generate_chart(data, name):
             alpha=0.2
         )
 
+        latest_price = data['Close'].iloc[-1]
+        latest_dd = data['Drawdown %'].iloc[-1]
+
         ax.scatter(data.index[-1], latest_price, s=80)
 
         ax.annotate(
@@ -144,9 +150,10 @@ def generate_chart(data, name):
             arrowprops=dict(arrowstyle="->")
         )
 
-        plt.savefig(filename)
+        plt.savefig(filename, bbox_inches='tight')
         plt.close()
 
+        print("Chart saved:", filename)
         return filename
 
     except Exception as e:
@@ -154,7 +161,7 @@ def generate_chart(data, name):
         return None
 
 # -------------------------
-# TELEGRAM SEND
+# TELEGRAM
 # -------------------------
 def send(msg, img=None):
     try:
@@ -166,7 +173,6 @@ def send(msg, img=None):
                 "parse_mode": "HTML"
             }
         )
-
         print("Message response:", response.text)
 
         if img and os.path.exists(img):
@@ -179,14 +185,13 @@ def send(msg, img=None):
             print("Photo response:", response.text)
 
     except Exception as e:
-        print("Telegram Error:", e)
+        print("Telegram error:", e)
 
 # -------------------------
-# MAIN FUNCTION
+# MAIN
 # -------------------------
 def run():
     state = load_state()
-    alerts_sent = False
 
     for name, symbol in INDICES.items():
         print(f"Processing {name}")
@@ -216,23 +221,32 @@ def run():
 
         level = get_level(dd)
 
+        # -------------------------
+        # TEST MODE → send everything
+        # -------------------------
+        if TEST_MODE:
+            msg = f"📊 <b>{name}</b>\nDrawdown: {dd:.2f}%"
+            if level:
+                msg += f"\n{level}"
+
+            chart = generate_chart(data, name)
+            send(msg, chart)
+            continue
+
+        # -------------------------
+        # PRODUCTION MODE
+        # -------------------------
         if not level:
             continue
 
         if state.get(name) == level:
             continue
 
-        msg = format_msg(name, dd, level)
+        msg = f"{level}\n<b>{name}</b>\nDrawdown: {dd:.2f}%"
         chart = generate_chart(data, name)
 
         send(msg, chart)
-
         state[name] = level
-        alerts_sent = True
-
-    # Optional: No alert message
-    if not alerts_sent:
-        send("✅ No major drawdown alerts right now.")
 
     save_state(state)
 
