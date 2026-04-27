@@ -177,6 +177,7 @@ def send(msg, img=None):
 # MAIN
 # -------------------------
 def run():
+    send("✅ BOT TEST MESSAGE")
     state = load_state()
 
     for name, symbol in INDICES.items():
