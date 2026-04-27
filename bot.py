@@ -194,7 +194,7 @@ def run():
         level = get_level(dd)
 
         if not level:
-            continue
+            level = "5"
 
         if state.get(name) == level:
             continue
