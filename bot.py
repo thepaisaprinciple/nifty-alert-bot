@@ -10,21 +10,20 @@ import math
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-print("BOT_TOKEN:", BOT_TOKEN)
-print("CHAT_ID:", CHAT_ID)
-
+# -------------------------
+# INDICES (clean list)
+# -------------------------
 INDICES = {
     "Nifty 50": "^NSEI",
     "Nifty Next 50": "^NSMIDCP",
     "Nifty Midcap 150": "NIFTYMIDCAP150.NS",
     "Nifty Smallcap 250": "NIFTYSMLCAP250.NS",
     "Nifty Microcap 250": "NIFTY_MICROCAP250.NS",
-    "Nifty 200 Momentum 30": "NIFTY200MOMENTM30.NS",
-    "Nifty 500": "CRSLDX"
+    "Nifty 200 Momentum 30": "NIFTY200MOMENTM30.NS"
 }
 
 # -------------------------
-# STATE
+# STATE HANDLING
 # -------------------------
 def load_state():
     try:
@@ -43,25 +42,35 @@ def save_state(state):
 def get_data(symbol):
     try:
         data = yf.download(symbol, period="3y", interval="1d")
-        if data.empty:
+
+        if data is None or data.empty:
             return None
+
+        if 'Close' not in data.columns:
+            return None
+
         return data
-    except:
+
+    except Exception as e:
+        print(f"Error fetching {symbol}: {e}")
         return None
 
 # -------------------------
-# CALCULATE
+# CALCULATE DRAWDOWN
 # -------------------------
 def calculate(data):
     try:
-        # Ensure Close is a Series (not DataFrame)
+        data = data.copy()
+
         if isinstance(data['Close'], pd.DataFrame):
             close = data['Close'].iloc[:, 0]
         else:
             close = data['Close']
 
-        data['Rolling Peak'] = close.rolling(252).max()
-        data['Drawdown %'] = ((close - data['Rolling Peak']) / data['Rolling Peak']) * 100
+        data.loc[:, 'Rolling Peak'] = close.rolling(252).max()
+        data.loc[:, 'Drawdown %'] = ((close - data['Rolling Peak']) / data['Rolling Peak']) * 100
+
+        data = data.dropna(subset=['Rolling Peak'])
 
         return data
 
@@ -70,7 +79,7 @@ def calculate(data):
         return None
 
 # -------------------------
-# ALERT
+# ALERT LOGIC
 # -------------------------
 def get_level(dd):
     if dd <= -20:
@@ -90,21 +99,20 @@ def format_msg(name, dd, level):
         return f"🟡 <b>{name}</b>\n📉 5% Dip\nDrawdown: {dd:.2f}%"
 
 # -------------------------
-# CHART (IMPROVED)
+# CHART (ENHANCED)
 # -------------------------
 def generate_chart(data, name):
     filename = f"{name}.png"
 
     try:
-        data = data.tail(300)
-
-        data['Rolling Peak'] = data['Close'].rolling(252).max()
-        data['Drawdown %'] = ((data['Close'] - data['Rolling Peak']) / data['Rolling Peak']) * 100
+        data = data.tail(300).copy()
 
         latest_price = data['Close'].iloc[-1]
         latest_dd = data['Drawdown %'].iloc[-1]
 
-        apds = [mpf.make_addplot(data['Rolling Peak'], linestyle='dashed')]
+        apds = [
+            mpf.make_addplot(data['Rolling Peak'], linestyle='dashed')
+        ]
 
         fig, axlist = mpf.plot(
             data,
@@ -141,17 +149,15 @@ def generate_chart(data, name):
 
         return filename
 
-    except:
+    except Exception as e:
+        print(f"Chart error {name}: {e}")
         return None
 
 # -------------------------
-# TELEGRAM
+# TELEGRAM SEND
 # -------------------------
 def send(msg, img=None):
     try:
-        print("Sending message to:", CHAT_ID)
-        print("Message:", msg)
-
         response = requests.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
             data={
@@ -163,7 +169,6 @@ def send(msg, img=None):
 
         print("Message response:", response.text)
 
-        # Send image ONLY if exists
         if img and os.path.exists(img):
             with open(img, 'rb') as f:
                 response = requests.post(
@@ -177,40 +182,42 @@ def send(msg, img=None):
         print("Telegram Error:", e)
 
 # -------------------------
-# MAIN
+# MAIN FUNCTION
 # -------------------------
 def run():
-    send("✅ BOT TEST MESSAGE")
     state = load_state()
+    alerts_sent = False
 
     for name, symbol in INDICES.items():
+        print(f"Processing {name}")
+
         data = get_data(symbol)
         if data is None:
             continue
 
         data = calculate(data)
-        if data is None:
+        if data is None or data.empty:
             continue
-        latest = data.iloc[-1]
 
+        latest = data.iloc[-1]
         dd = latest['Drawdown %']
-        
+
         try:
             if isinstance(dd, pd.Series):
                 dd = dd.iloc[0]
-                
+
             dd = float(dd)
-            
+
             if math.isnan(dd):
                 continue
-            
+
         except:
             continue
-    
+
         level = get_level(dd)
 
         if not level:
-            level = "5"
+            continue
 
         if state.get(name) == level:
             continue
@@ -219,9 +226,18 @@ def run():
         chart = generate_chart(data, name)
 
         send(msg, chart)
+
         state[name] = level
+        alerts_sent = True
+
+    # Optional: No alert message
+    if not alerts_sent:
+        send("✅ No major drawdown alerts right now.")
 
     save_state(state)
 
+# -------------------------
+# RUN
+# -------------------------
 if __name__ == "__main__":
     run()
