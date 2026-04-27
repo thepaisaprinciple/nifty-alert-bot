@@ -16,7 +16,7 @@ CHAT_ID = os.getenv("CHAT_ID")
 # -------------------------
 # SETTINGS
 # -------------------------
-TEST_MODE = True  # change to False later
+TEST_MODE = True  # change to False when going live
 
 INDICES = {
     "Nifty 50": "^NSEI",
@@ -42,7 +42,7 @@ def save_state(state):
         json.dump(state, f)
 
 # -------------------------
-# FETCH
+# FETCH DATA
 # -------------------------
 def get_data(symbol):
     try:
@@ -61,13 +61,13 @@ def get_data(symbol):
         return None
 
 # -------------------------
-# CALCULATION
+# CALCULATE (FINAL FIXED)
 # -------------------------
 def calculate(data):
     try:
-        data = data.copy()
+        df = data.copy()
 
-        close = data['Close']
+        close = df['Close']
         if isinstance(close, pd.DataFrame):
             close = close.iloc[:, 0]
 
@@ -75,25 +75,29 @@ def calculate(data):
         if close.empty:
             return None
 
-        data = data.loc[close.index]
-
         rolling_peak = close.rolling(252).max()
-        if rolling_peak.isna().all():
+
+        calc_df = pd.DataFrame({
+            "Close": close,
+            "Rolling Peak": rolling_peak
+        })
+
+        calc_df = calc_df.dropna()
+        if calc_df.empty:
             return None
 
-        data.loc[:, 'Rolling Peak'] = rolling_peak
-        data.loc[:, 'Drawdown %'] = ((close - rolling_peak) / rolling_peak) * 100
+        calc_df["Drawdown %"] = (
+            (calc_df["Close"] - calc_df["Rolling Peak"]) / calc_df["Rolling Peak"]
+        ) * 100
 
-        data = data.dropna(subset=['Rolling Peak'])
-
-        return data
+        return calc_df
 
     except Exception as e:
         print(f"Calculation error: {e}")
         return None
 
 # -------------------------
-# LEVEL
+# ALERT LEVEL
 # -------------------------
 def get_level(dd):
     if dd <= -20:
