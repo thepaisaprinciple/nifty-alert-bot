@@ -10,6 +10,9 @@ import math
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
+print("BOT_TOKEN:", BOT_TOKEN)
+print("CHAT_ID:", CHAT_ID)
+
 INDICES = {
     "Nifty 50": "^NSEI",
     "Nifty Next 50": "^NSMIDCP",
