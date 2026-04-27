@@ -5,6 +5,7 @@ import mplfinance as mpf
 import matplotlib.pyplot as plt
 import json
 import os
+import math
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -177,6 +178,19 @@ def run():
         latest = data.iloc[-1]
 
         dd = latest['Drawdown %']
+        
+        try:
+            if isinstance(dd, pd.Series):
+                dd = dd.iloc[0]
+                
+            dd = float(dd)
+            
+            if math.isnan(dd):
+                continue
+            
+        except:
+            continue
+    
         level = get_level(dd)
 
         if not level:
