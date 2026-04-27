@@ -67,13 +67,14 @@ def calculate(data):
     try:
         df = data.copy()
 
-        # Ensure required columns exist
+        # Ensure OHLC exists
         required_cols = ['Open', 'High', 'Low', 'Close']
         for col in required_cols:
             if col not in df.columns:
                 print(f"Missing column: {col}")
                 return None
 
+        # Extract Close safely
         close = df['Close']
         if isinstance(close, pd.DataFrame):
             close = close.iloc[:, 0]
@@ -82,25 +83,37 @@ def calculate(data):
         if close.empty:
             return None
 
-        # Calculate rolling peak
-        df.loc[:, 'Rolling Peak'] = close.rolling(252).max()
+        # Compute rolling peak separately
+        rolling_peak = close.rolling(252).max()
+
+        # Create clean calc dataframe
+        calc = pd.DataFrame({
+            "Close": close,
+            "Rolling Peak": rolling_peak
+        })
 
         # Drop invalid rows
-        df = df.dropna(subset=['Rolling Peak'])
-
-        if df.empty:
+        calc = calc.dropna()
+        if calc.empty:
             return None
 
-        # Calculate drawdown
-        df.loc[:, 'Drawdown %'] = (
-            (df['Close'] - df['Rolling Peak']) / df['Rolling Peak']
+        # Compute drawdown
+        calc["Drawdown %"] = (
+            (calc["Close"] - calc["Rolling Peak"]) / calc["Rolling Peak"]
         ) * 100
+
+        # 🔥 Merge back with original OHLC
+        df = df.loc[calc.index]
+
+        df.loc[:, 'Rolling Peak'] = calc['Rolling Peak']
+        df.loc[:, 'Drawdown %'] = calc['Drawdown %']
 
         return df
 
     except Exception as e:
         print(f"Calculation error: {e}")
         return None
+        
 # -------------------------
 # ALERT LEVEL
 # -------------------------
