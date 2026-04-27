@@ -67,6 +67,13 @@ def calculate(data):
     try:
         df = data.copy()
 
+        # Ensure required columns exist
+        required_cols = ['Open', 'High', 'Low', 'Close']
+        for col in required_cols:
+            if col not in df.columns:
+                print(f"Missing column: {col}")
+                return None
+
         close = df['Close']
         if isinstance(close, pd.DataFrame):
             close = close.iloc[:, 0]
@@ -75,27 +82,25 @@ def calculate(data):
         if close.empty:
             return None
 
-        rolling_peak = close.rolling(252).max()
+        # Calculate rolling peak
+        df.loc[:, 'Rolling Peak'] = close.rolling(252).max()
 
-        calc_df = pd.DataFrame({
-            "Close": close,
-            "Rolling Peak": rolling_peak
-        })
+        # Drop invalid rows
+        df = df.dropna(subset=['Rolling Peak'])
 
-        calc_df = calc_df.dropna()
-        if calc_df.empty:
+        if df.empty:
             return None
 
-        calc_df["Drawdown %"] = (
-            (calc_df["Close"] - calc_df["Rolling Peak"]) / calc_df["Rolling Peak"]
+        # Calculate drawdown
+        df.loc[:, 'Drawdown %'] = (
+            (df['Close'] - df['Rolling Peak']) / df['Rolling Peak']
         ) * 100
 
-        return calc_df
+        return df
 
     except Exception as e:
         print(f"Calculation error: {e}")
         return None
-
 # -------------------------
 # ALERT LEVEL
 # -------------------------
