@@ -28,9 +28,9 @@ INDICES = [
     {"key": "NIFTY50",     "name": "Nifty 50",
      "ticker": "^NSEI",             "thresholds": [5, 10, 15, 20]},
     {"key": "MIDCAP150",   "name": "Nifty Midcap 150",
-     "ticker": "NIFTYMIDCAP150.NS", "thresholds": [10, 15, 20, 30]},
+     "ticker": "NIFTYMIDCAP150.NS", "thresholds": [5, 10, 15, 20]},
     {"key": "SMALLCAP250", "name": "Nifty Smallcap 250",
-     "ticker": "NIFTYSMLCAP250.NS", "thresholds": [10, 20, 30, 40]},
+     "ticker": "NIFTYSMLCAP250.NS", "thresholds": [5, 10, 15, 20]},
     # Strategy index - SKIPPED for now. Yahoo has no raw index; the only
     # proxy is the Motilal Oswal ETF (launched Jun-2025), too new for a
     # clean 52w/3y high or 200-DMA. Uncomment to re-enable (~mid-2026 it
