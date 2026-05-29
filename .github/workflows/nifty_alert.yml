@@ -47,7 +47,7 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID:   ${{ secrets.CHAT_ID }}
           FORCE_SEND_SUMMARY: ${{ github.event.inputs.force_send_summary || 'false' }}
-        run: python nifty_alert.py
+        run: python debug_tickers.py
 
       - name: Persist alert state
         if: always()
