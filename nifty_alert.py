@@ -29,8 +29,11 @@ INDICES = [
      "ticker": "^NSEI",             "thresholds": [5, 10, 15, 20]},
     {"key": "MIDCAP150",   "name": "Nifty Midcap 150",
      "ticker": "NIFTYMIDCAP150.NS", "thresholds": [5, 10, 15, 20]},
+    # Smallcap 250: raw index NIFTYSMLCAP250.NS has no usable history in
+    # yfinance, so we proxy with the HDFC ETF (3y history, high liquidity).
     {"key": "SMALLCAP250", "name": "Nifty Smallcap 250",
-     "ticker": "NIFTYSMLCAP250.NS", "thresholds": [5, 10, 15, 20]},
+     "ticker": "HDFCSML250.NS",     "thresholds": [5, 10, 15, 20],
+     "proxy_etf": True},
     # Strategy index - SKIPPED for now. Yahoo has no raw index; the only
     # proxy is the Motilal Oswal ETF (launched Jun-2025), too new for a
     # clean 52w/3y high or 200-DMA. Uncomment to re-enable (~mid-2026 it
@@ -53,13 +56,48 @@ log = logging.getLogger("nifty")
 
 
 # ── Market data ───────────────────────────────────────────────────────
+def _fetch_closes(ticker: str, start: str):
+    """
+    Try two fetch strategies and return the first that yields >= 10 rows.
+
+    Some NSE index tickers (e.g. NIFTYSMLCAP250.NS) silently break with
+    Ticker.history() but work fine via yf.download(), which uses a different
+    internal API path. We try both so every ticker is covered.
+    """
+    import yfinance as yf
+    import pandas as pd
+
+    # Strategy 1: Ticker.history with explicit start date
+    try:
+        closes = yf.Ticker(ticker).history(start=start, interval="1d")["Close"].dropna()
+        if len(closes) >= 10:
+            log.info("[%s] fetched %d rows via Ticker.history.", ticker, len(closes))
+            return closes
+    except Exception as e:
+        log.warning("[%s] Ticker.history failed: %s", ticker, e)
+
+    # Strategy 2: yf.download — different API path, works for quirky NSE indices
+    try:
+        df = yf.download(ticker, start=start, progress=False, auto_adjust=True)
+        # yfinance >=0.2 may return MultiLevel columns for a single ticker
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.droplevel(1)
+        closes = df["Close"].dropna()
+        if len(closes) >= 10:
+            log.info("[%s] fetched %d rows via yf.download.", ticker, len(closes))
+            return closes
+    except Exception as e:
+        log.warning("[%s] yf.download failed: %s", ticker, e)
+
+    import pandas as pd
+    return pd.Series(dtype=float)
+
+
 def get_quote(ticker: str) -> dict:
     """Return price + reference highs/DMA, flagging when history is short."""
-    import yfinance as yf
+    start = (datetime.now(timezone.utc) - timedelta(days=3 * 365)).strftime("%Y-%m-%d")
+    closes = _fetch_closes(ticker, start)
 
-    t = yf.Ticker(ticker)
-    hist = t.history(period="3y", interval="1d")
-    closes = hist["Close"].dropna()
     if closes.empty:
         raise RuntimeError(f"No price history for {ticker}.")
 
