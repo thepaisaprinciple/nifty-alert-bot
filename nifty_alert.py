@@ -3,7 +3,7 @@
 📈 Nifty Multi-Index Alert Bot
 ------------------------------
 Pings Telegram when any tracked index crosses a *new* drawdown rung
-(measured from its 52 week high) - so you only hear when it gets CHEAPER
+(measured from its 52-week high) — so you only hear when it gets CHEAPER
 than the last alert. Each index has its own ladder because midcaps and
 smallcaps are far more volatile than the Nifty 50.
 
@@ -133,37 +133,63 @@ def send_telegram(text: str) -> None:
 
 
 # ── Message formatting ────────────────────────────────────────────────
-def index_block(cfg: dict, q: dict, level: int) -> str:
-    """One index's section of the combined message."""
-    dd_52w = max(0.0, (q["high_52w"] - q["price"]) / q["high_52w"] * 100)
-    high_label = "High" if q["full_year"] else "High (since launch)"
+DOWN = "\u25BC"                                   # ▼ down triangle
+PALETTE = ["\U0001F7E1", "\U0001F7E0", "\U0001F534", "\U0001F7E3"]  # 🟡 🟠 🔴 🟣
+GREEN = "\U0001F7E2"                               # 🟢 near highs / healthy
 
-    lines = ["<b>" + cfg["name"] + "</b>"]
+
+def severity_dot(drawdown: float, thresholds: list) -> str:
+    """Colour by how deep we currently are: 🟢 → 🟡 → 🟠 → 🔴 → 🟣."""
+    crossed = [i for i, t in enumerate(thresholds) if drawdown >= t]
+    if not crossed:
+        return GREEN
+    return PALETTE[min(max(crossed), len(PALETTE) - 1)]
+
+
+def index_block(cfg: dict, q: dict, level: int, fired: bool) -> str:
+    """One index rendered as a header line + a blockquote 'card'."""
+    dd_52w = max(0.0, (q["high_52w"] - q["price"]) / q["high_52w"] * 100)
+    dot = severity_dot(dd_52w, cfg["thresholds"])
+    high_label = "52w High" if q["full_year"] else "High (since launch)"
+
+    header = f"{dot} <b>{cfg['name']}</b> : {DOWN} {dd_52w:.1f}%"
+
+    body = []
     if level > 0:
-        tranche = cfg["thresholds"].index(level) + 1
-        lines.append(f"\U0001F53B crossed \u2212{level}%  \u2192  deploy tranche {tranche}")
-    lines.append(f"  Now {q['price']:,.0f} \u00b7 {high_label} {q['high_52w']:,.0f} (\u2212{dd_52w:.1f}%)")
+        thr = cfg["thresholds"]
+        label = f"tranche {thr.index(level) + 1}" if level in thr else f"{level}% level"
+        if fired:
+            body.append(f"\U0001F6D2 Deploy {label}  (crossed {DOWN} {level}%)")
+        else:
+            body.append(f"\u2713 Already at {label}  ({DOWN} {level}%)")
+
+    body.append(f"Price    : {q['price']:,.0f}")
+    body.append(f"{high_label} : {q['high_52w']:,.0f}")
 
     if q["has_3y"]:
         dd_3y = max(0.0, (q["high_3y"] - q["price"]) / q["high_3y"] * 100)
-        lines.append(f"  3y High {q['high_3y']:,.0f} (\u2212{dd_3y:.1f}%)")
+        body.append(f"3y High  : {q['high_3y']:,.0f}  ({DOWN} {dd_3y:.1f}%)")
 
     if q["dma200"] is not None:
         below = q["price"] < q["dma200"]
-        lines.append("  \U0001F53B below 200-DMA (trend confirms)" if below
-                     else "  \U0001F7E2 above 200-DMA (trend intact)")
+        body.append("Trend    : \U0001F534 below 200-DMA" if below
+                    else "Trend    : \U0001F7E2 above 200-DMA")
     else:
-        lines.append("  \u23F3 200-DMA not available yet")
+        body.append("Trend    : \u23F3 200-DMA not ready")
 
     if cfg.get("proxy_etf"):
-        lines.append("  <i>tracked via ETF proxy</i>")
-    return "\n".join(lines)
+        body.append("<i>tracked via ETF proxy</i>")
+
+    return header + "\n<blockquote>" + "\n".join(body) + "</blockquote>"
 
 
 def build_message(blocks: list, alert: bool) -> str:
     now = datetime.now(IST).strftime("%d %b %Y, %H:%M IST")
-    header = "\U0001F4C9 <b>INDEX ALERT \u2014 new level(s) crossed</b>" if alert \
-        else "\U0001F4CA <b>INDEX STATUS</b>"
+    if alert:
+        header = ("\U0001F6A8 <b>INDEX ALERT : new level crossed</b>\n"
+                  "<i>\U0001F7E1 shallow \u2192 \U0001F7E3 deep</i>")
+    else:
+        header = "\U0001F4CA <b>INDEX STATUS</b>"
     return header + "\n\n" + "\n\n".join(blocks) + f"\n\n\U0001F552 {now}"
 
 
@@ -190,7 +216,7 @@ def main() -> int:
         d = evaluate(drawdown, prev, cfg["thresholds"])
         log.info("[%s] dd=%.2f%% prev=%s -> %s", key, drawdown, prev, d)
 
-        block = index_block(cfg, q, d["new_level"])
+        block = index_block(cfg, q, d["new_level"], d["fire"])
         all_blocks.append(block)
         if d["fire"]:
             fired_blocks.append(block)
