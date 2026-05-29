@@ -17,7 +17,11 @@ for name, ticker in TICKERS.items():
     print(f"{'='*50}")
     try:
         t    = yf.Ticker(ticker)
-        hist = t.history(period="3y", interval="1d")
+        from datetime import timedelta
+        start = (__import__("datetime").datetime.today() - timedelta(days=3*365)).strftime("%Y-%m-%d")
+        hist = t.history(start=start, interval="1d")
+        if len(hist) < 10:
+            hist = t.history(period="max", interval="1d")
         c    = hist["Close"].dropna()
 
         if c.empty:
