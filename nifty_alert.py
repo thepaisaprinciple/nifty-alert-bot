@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-📈 Nifty Alert Bot
-------------------
-Alerts on Telegram when the Nifty 50 crosses a *new* drawdown rung
-(5 / 10 / 15 / 20 %) measured from its 52-week high — so you only ever
-hear when it gets CHEAPER than the last time you were alerted.
+📈 Nifty Multi-Index Alert Bot
+------------------------------
+Pings Telegram when any tracked index crosses a *new* drawdown rung
+(measured from its 52 week high) - so you only hear when it gets CHEAPER
+than the last alert. Each index has its own ladder because midcaps and
+smallcaps are far more volatile than the Nifty 50.
 
-State is persisted in nifty_state.json (committed back by the workflow),
-which is what stops the daily-spam problem.
+Per-index state is persisted in nifty_state.json (committed back by the
+workflow) — that is what stops the daily-spam problem.
 """
 
 from __future__ import annotations
@@ -21,49 +22,59 @@ from pathlib import Path
 
 import requests
 
-# ── Config ────────────────────────────────────────────────────────────
-TICKER = "^NSEI"                       # Nifty 50 index on Yahoo Finance
-THRESHOLDS = [5, 10, 15, 20]           # drawdown rungs (%) from 52w high
-RESET_BAND = 1.0                       # re-arm ladder once back within this % of the high
-STATE_FILE = Path("nifty_state.json")
+# ── Config: edit indices / ladders here ───────────────────────────────
+# thresholds = drawdown rungs (%) from the 52-week high, shallow -> deep.
+INDICES = [
+    {"key": "NIFTY50",     "name": "Nifty 50",
+     "ticker": "^NSEI",             "thresholds": [5, 10, 15, 20]},
+    {"key": "MIDCAP150",   "name": "Nifty Midcap 150",
+     "ticker": "NIFTYMIDCAP150.NS", "thresholds": [10, 15, 20, 30]},
+    {"key": "SMALLCAP250", "name": "Nifty Smallcap 250",
+     "ticker": "NIFTYSMLCAP250.NS", "thresholds": [10, 20, 30, 40]},
+    # Strategy index - SKIPPED for now. Yahoo has no raw index; the only
+    # proxy is the Motilal Oswal ETF (launched Jun-2025), too new for a
+    # clean 52w/3y high or 200-DMA. Uncomment to re-enable (~mid-2026 it
+    # will have a full year of history).
+    # {"key": "MOM150M50",   "name": "Nifty Midcap150 Momentum 50",
+    #  "ticker": "MOMIDMTM.NS",       "thresholds": [10, 15, 20, 30],
+    #  "proxy_etf": True},
+]
 
+RESET_BAND = 1.0          # re-arm a ladder once back within this % of the high
+STATE_FILE = Path("nifty_state.json")
 IST = timezone(timedelta(hours=5, minutes=30))
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("nifty_alert.log"),
-    ],
+    handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler("nifty_alert.log")],
 )
 log = logging.getLogger("nifty")
 
 
 # ── Market data ───────────────────────────────────────────────────────
-def get_quote() -> dict:
-    """Return current price, 52w high, 3y high, and 200-DMA for the Nifty."""
+def get_quote(ticker: str) -> dict:
+    """Return price + reference highs/DMA, flagging when history is short."""
     import yfinance as yf
 
-    t = yf.Ticker(TICKER)
+    t = yf.Ticker(ticker)
     hist = t.history(period="3y", interval="1d")
     closes = hist["Close"].dropna()
     if closes.empty:
-        raise RuntimeError("No price history returned from Yahoo Finance.")
+        raise RuntimeError(f"No price history for {ticker}.")
 
-    high_52w = float(closes.tail(252).max())   # ~1 trading year
-    high_3y = float(closes.max())               # full 3-year window
-    dma200 = float(closes.tail(200).mean())
+    n = len(closes)
+    high_52w = float(closes.tail(252).max())          # ~1 trading year
+    high_3y = float(closes.max())
+    dma200 = float(closes.tail(200).mean()) if n >= 200 else None
 
-    # Prefer a fresh intraday price (to catch same-day drops);
-    # fall back to the last daily close.
     price = None
     try:
         intra = t.history(period="1d", interval="1m")["Close"].dropna()
         if len(intra):
             price = float(intra.iloc[-1])
     except Exception as e:  # noqa: BLE001
-        log.warning("Intraday fetch failed (%s); using last close.", e)
+        log.warning("[%s] intraday fetch failed (%s); using last close.", ticker, e)
     if price is None:
         price = float(closes.iloc[-1])
 
@@ -72,6 +83,9 @@ def get_quote() -> dict:
         "high_52w": high_52w,
         "high_3y": high_3y,
         "dma200": dma200,
+        "sessions": n,
+        "full_year": n >= 252,     # enough data for a true 52-week high?
+        "has_3y": n >= 504,        # ~2y+ before the 3y line is meaningful
     }
 
 
@@ -82,46 +96,32 @@ def load_state() -> dict:
             return json.loads(STATE_FILE.read_text())
         except json.JSONDecodeError:
             log.warning("State file corrupt; starting fresh.")
-    return {"highest_threshold_triggered": 0, "last_updated": None, "last_price": None}
+    return {}
 
 
 def save_state(state: dict) -> None:
     STATE_FILE.write_text(json.dumps(state, indent=2))
-    log.info("State saved: %s", state)
+    log.info("State saved.")
 
 
-# ── Core decision logic (pure function → easy to test) ────────────────
-def evaluate(drawdown_pct: float, prev_level: int) -> dict:
-    """
-    Decide whether to alert.
-
-    Returns dict with:
-      fire        -> bool, send an alert this run?
-      new_level   -> int, threshold to store as 'highest triggered'
-      reset       -> bool, did the ladder re-arm (back near the high)?
-    """
-    # Recovered back to (near) the high → re-arm the whole ladder, stay quiet.
+# ── Core decision logic (pure -> unit-tested) ─────────────────────────
+def evaluate(drawdown_pct: float, prev_level: int, thresholds: list) -> dict:
     if drawdown_pct <= RESET_BAND:
         return {"fire": False, "new_level": 0, "reset": prev_level != 0}
 
-    qualifying = [t for t in THRESHOLDS if drawdown_pct >= t]
+    qualifying = [t for t in thresholds if drawdown_pct >= t]
     current = max(qualifying) if qualifying else 0
 
-    # Only alert when we've crossed into a DEEPER rung than before.
     if current > prev_level:
         return {"fire": True, "new_level": current, "reset": False}
-
-    # Same or shallower (partial recovery, not back to top) → keep locked, quiet.
     return {"fire": False, "new_level": prev_level, "reset": False}
 
 
 # ── Telegram ──────────────────────────────────────────────────────────
 def send_telegram(text: str) -> None:
-    token = os.environ.get("BOT_TOKEN")
-    chat_id = os.environ.get("CHAT_ID")
+    token, chat_id = os.environ.get("BOT_TOKEN"), os.environ.get("CHAT_ID")
     if not token or not chat_id:
         raise RuntimeError("BOT_TOKEN / CHAT_ID env vars are not set.")
-
     resp = requests.post(
         f"https://api.telegram.org/bot{token}/sendMessage",
         json={"chat_id": chat_id, "text": text, "parse_mode": "HTML",
@@ -133,68 +133,84 @@ def send_telegram(text: str) -> None:
 
 
 # ── Message formatting ────────────────────────────────────────────────
-TRANCHE = {5: "tranche 1", 10: "tranche 2", 15: "tranche 3", 20: "tranche 4"}
+def index_block(cfg: dict, q: dict, level: int) -> str:
+    """One index's section of the combined message."""
+    dd_52w = max(0.0, (q["high_52w"] - q["price"]) / q["high_52w"] * 100)
+    high_label = "High" if q["full_year"] else "High (since launch)"
+
+    lines = ["<b>" + cfg["name"] + "</b>"]
+    if level > 0:
+        tranche = cfg["thresholds"].index(level) + 1
+        lines.append(f"\U0001F53B crossed \u2212{level}%  \u2192  deploy tranche {tranche}")
+    lines.append(f"  Now {q['price']:,.0f} \u00b7 {high_label} {q['high_52w']:,.0f} (\u2212{dd_52w:.1f}%)")
+
+    if q["has_3y"]:
+        dd_3y = max(0.0, (q["high_3y"] - q["price"]) / q["high_3y"] * 100)
+        lines.append(f"  3y High {q['high_3y']:,.0f} (\u2212{dd_3y:.1f}%)")
+
+    if q["dma200"] is not None:
+        below = q["price"] < q["dma200"]
+        lines.append("  \U0001F53B below 200-DMA (trend confirms)" if below
+                     else "  \U0001F7E2 above 200-DMA (trend intact)")
+    else:
+        lines.append("  \u23F3 200-DMA not available yet")
+
+    if cfg.get("proxy_etf"):
+        lines.append("  <i>tracked via ETF proxy</i>")
+    return "\n".join(lines)
 
 
-def build_message(q: dict, level: int, *, summary: bool = False) -> str:
-    dd_52w = (q["high_52w"] - q["price"]) / q["high_52w"] * 100
-    dd_3y = (q["high_3y"] - q["price"]) / q["high_3y"] * 100
-    below_dma = q["price"] < q["dma200"]
-    dma_line = ("🔻 BELOW 200-DMA — trend confirms the fall"
-                if below_dma else
-                "🟢 above 200-DMA — trend still intact (shallow dip)")
+def build_message(blocks: list, alert: bool) -> str:
     now = datetime.now(IST).strftime("%d %b %Y, %H:%M IST")
-
-    header = ("📊 <b>NIFTY STATUS</b>" if summary
-              else f"📉 <b>NIFTY ALERT — −{level}% level crossed</b>")
-    action = "" if summary else f"\n👉 Consider deploying <b>{TRANCHE.get(level, '')}</b>.\n"
-
-    return (
-        f"{header}\n{action}"
-        f"\nCurrent:  <b>{q['price']:,.0f}</b>"
-        f"\n52w High: {q['high_52w']:,.0f}  (−{dd_52w:.1f}%)"
-        f"\n3y High:  {q['high_3y']:,.0f}  (−{max(dd_3y,0):.1f}%)"
-        f"\n200-DMA:  {q['dma200']:,.0f}"
-        f"\n{dma_line}"
-        f"\n\n🕒 {now}"
-    )
+    header = "\U0001F4C9 <b>INDEX ALERT \u2014 new level(s) crossed</b>" if alert \
+        else "\U0001F4CA <b>INDEX STATUS</b>"
+    return header + "\n\n" + "\n\n".join(blocks) + f"\n\n\U0001F552 {now}"
 
 
 # ── Main ──────────────────────────────────────────────────────────────
 def main() -> int:
     force_summary = os.environ.get("FORCE_SEND_SUMMARY", "false").lower() == "true"
-
-    try:
-        q = get_quote()
-    except Exception as e:  # noqa: BLE001
-        log.error("Failed to fetch quote: %s", e)
-        return 1
-
-    drawdown = max(0.0, (q["high_52w"] - q["price"]) / q["high_52w"] * 100)
     state = load_state()
-    prev = state.get("highest_threshold_triggered", 0)
 
-    decision = evaluate(drawdown, prev)
-    log.info("Drawdown %.2f%% | prev_level=%s | decision=%s", drawdown, prev, decision)
+    fired_blocks = []
+    all_blocks = []
+    had_error = False
 
-    if decision["fire"]:
-        send_telegram(build_message(q, decision["new_level"]))
-    elif force_summary:
-        send_telegram(build_message(q, decision["new_level"], summary=True))
-        log.info("Forced summary sent (no new alert level).")
+    for cfg in INDICES:
+        key = cfg["key"]
+        try:
+            q = get_quote(cfg["ticker"])
+        except Exception as e:  # noqa: BLE001
+            log.error("[%s] fetch failed: %s", key, e)
+            had_error = True
+            continue
+
+        drawdown = max(0.0, (q["high_52w"] - q["price"]) / q["high_52w"] * 100)
+        prev = state.get(key, {}).get("highest_threshold_triggered", 0)
+        d = evaluate(drawdown, prev, cfg["thresholds"])
+        log.info("[%s] dd=%.2f%% prev=%s -> %s", key, drawdown, prev, d)
+
+        block = index_block(cfg, q, d["new_level"])
+        all_blocks.append(block)
+        if d["fire"]:
+            fired_blocks.append(block)
+
+        state[key] = {
+            "highest_threshold_triggered": d["new_level"],
+            "last_price": round(q["price"], 2),
+            "last_updated": datetime.now(timezone.utc).isoformat(),
+        }
+
+    if fired_blocks:
+        send_telegram(build_message(fired_blocks, alert=True))
+    elif force_summary and all_blocks:
+        send_telegram(build_message(all_blocks, alert=False))
+        log.info("Forced summary sent (no new alert levels).")
     else:
-        if decision["reset"]:
-            log.info("Ladder re-armed (back near 52w high). No alert.")
-        else:
-            log.info("No new rung crossed. Staying quiet.")
+        log.info("No new rungs crossed. Staying quiet.")
 
-    state.update(
-        highest_threshold_triggered=decision["new_level"],
-        last_updated=datetime.now(timezone.utc).isoformat(),
-        last_price=round(q["price"], 2),
-    )
     save_state(state)
-    return 0
+    return 1 if had_error and not all_blocks else 0
 
 
 if __name__ == "__main__":
