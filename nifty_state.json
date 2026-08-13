@@ -1,17 +1,17 @@
 {
   "NIFTY50": {
     "highest_threshold_triggered": 10,
-    "last_price": 24435.95,
-    "last_updated": "2026-08-12T10:49:09.059355+00:00"
+    "last_price": 24335.0,
+    "last_updated": "2026-08-13T05:59:14.315464+00:00"
   },
   "MIDCAP150": {
     "highest_threshold_triggered": 0,
-    "last_price": 23521.5,
-    "last_updated": "2026-08-12T10:49:09.171927+00:00"
+    "last_price": 23468.4,
+    "last_updated": "2026-08-13T05:59:14.494182+00:00"
   },
   "SMALLCAP250": {
     "highest_threshold_triggered": 0,
-    "last_price": 184.44,
-    "last_updated": "2026-08-12T10:49:09.304918+00:00"
+    "last_price": 184.99,
+    "last_updated": "2026-08-13T05:59:14.639233+00:00"
   }
 }
